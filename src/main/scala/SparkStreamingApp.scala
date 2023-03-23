@@ -6,15 +6,39 @@ import com.databricks.spark.redshift._
 import org.json4s.DefaultFormats
 import org.json4s.jackson.JsonMethods._
 import com.github.mrpowers.spark.daria.sql.SparkSessionExt._
-
+import scala.util.matching.Regex
 
 
 object SparkStreamingApp {
+  private def convertArtworkDimension(artwork_dimension: String): String = {
+    val dimension_cm_pattern: Regex = "(\\b([A-Za-z' \\.]* ?)?(?:.*?)(\\d*(?:[.,]\\d+)?)\\s*x\\s*(\\d*(?:[.,]\\d+)?)(?:(?:\\s*x\\s*)(\\d*(?:[.,]\\d+)?))?\\s*(cm|mm|m)\\b)+".r
+
+    val dimension: String = dimension_cm_pattern findFirstMatchIn artwork_dimension match {
+      case Some(_) =>
+        var result: String = ""
+        val matcher = dimension_cm_pattern.findAllIn(artwork_dimension)
+        for (i <- 2 to matcher.groupCount) {
+          val currentGroup = matcher.group(i)
+          val prevGroup = matcher.group(i - 1)
+          val prevWasDigit = prevGroup != null && prevGroup.matches("\\d+(?:[.,]\\d+)?")
+          if (prevWasDigit && currentGroup != null && !currentGroup.matches("\\b(?:cm|m(?:m)?)\\b")) {
+            result = result + " x " + currentGroup
+          } else {
+            result = result + currentGroup
+          }
+        }
+        result.trim().replaceAll("null", "")
+      case None => "null"
+    }
+    dimension
+  }
+
   private def convertAuctionRecord(row: Row) = {
     val key = row.getAs[String]("key")
     val value = row.getAs[String]("value")
+    println("key: " + key)
+    println("value: " + value)
 
-    val kafkaSchema = defineSchema(key)
     val json = parse(value)
     implicit val formats: DefaultFormats = DefaultFormats
     val mapObj = json.extract[Map[String, Any]]
@@ -39,30 +63,40 @@ object SparkStreamingApp {
           stringOutMap("realized_price"),
           stringOutMap("lot"),
           stringOutMap("auction_venue"),
-          stringOutMap("sale_date")
+          stringOutMap("sale_date"),
+          "null",
+          "null",
+          "null",
+          "null"
         )
       case "artsy" =>
-        val outMap = mapObj.-("bought_in", "currency", "auction_id", "medium", "timestamp")
+        val outMap = mapObj.-("bought_in", "currency", "auction_id", "timestamp")
         val stringOutMap = outMap.mapValues(v => {
           if (v != null) { v.toString.replaceAll("\n", "") }
           else { "null" }
         })
+
         (
           "artsy",
           stringOutMap("artfacts_artist_id"),
           stringOutMap("artsy_artist_id"),
           stringOutMap("artfacts_artist_name"),
           stringOutMap("title"),
-          stringOutMap("date_year"),
-          stringOutMap("category"),
+          stringOutMap("created_year"),
+          stringOutMap("medium"),
           stringOutMap("dimension"),
           "null",
           stringOutMap("estimate_price"),
           stringOutMap("realized_price"),
-          "null",
+          stringOutMap("lot_number"),
           stringOutMap("organization"),
           stringOutMap("sale_date"),
-      )
+          "null",
+          stringOutMap("sale_title"),
+          stringOutMap("location"),
+          convertArtworkDimension(stringOutMap("dimension"))
+        )
+
       case _ => throw new IllegalArgumentException(s"Unknown source format: $key")
     }
   }
@@ -79,7 +113,7 @@ object SparkStreamingApp {
     import spark.implicits._
 
     val kafkaServer = "ec2-3-36-52-200.ap-northeast-2.compute.amazonaws.com:9092"
-    val topic = "test_topic"
+    val topic = "test_topic2"
 
     val redshiftSchema = StructType(
       Seq(
@@ -97,6 +131,10 @@ object SparkStreamingApp {
         StructField("lot", StringType),
         StructField("auction_sale_organization", StringType),
         StructField("sale_date", StringType),
+        StructField("category", StringType),
+        StructField("auction_sale_title", StringType),
+        StructField("location", StringType),
+        StructField("converted_dimension", StringType),
         StructField("id", IntegerType)
       )
     )
@@ -136,12 +174,16 @@ object SparkStreamingApp {
       "lot",
       "auction_sale_organization",
       "sale_date",
+      "category",
+      "auction_sale_title",
+      "location",
+      "converted_dimension"
     )
 
     convertedDF = convertedDF.withColumn("id", monotonically_increasing_id())
 
-    val united = redshiftDF.union(convertedDF)
-    united.show()
+    val unitedDF = redshiftDF.union(convertedDF)
+    unitedDF.show()
 
     // println("Transform the data to match the Redshift table schema")
 
@@ -186,50 +228,5 @@ object SparkStreamingApp {
     //////      writer.start().awaitTermination()
 
     spark.sparkContext.stop()
-  }
-
-  private def defineSchema(source: String): StructType = {
-    val kafkaArtsySchema = new StructType()
-      .add("artfacts_artist_id", IntegerType)
-      .add("artfacts_artist_name", StringType)
-      .add("bought_in", BooleanType)
-      .add("category", StringType)
-      .add("currency", StringType)
-      .add("date_year", StringType)
-      .add("dimension", StringType)
-      .add("estimate_price", StringType)
-      .add("auction_id", StringType)
-      .add("medium", StringType)
-      .add("organization", StringType)
-      .add("realized_price", StringType)
-      .add("sale_date", StringType)
-      .add("title", StringType)
-      .add("timestamp", StringType)
-      .add("artsy_artist_id", StringType)
-
-    val kafkaMutualartSchema = new StructType()
-      .add("artfacts_artist_id", IntegerType)
-      .add("mutualart_artist_id", StringType)
-      .add("artist_name", StringType)
-      .add("artwork_title", StringType)
-      .add("artwork_date_created", StringType)
-      .add("artwork_medium", StringType)
-      .add("artwork_size", StringType)
-      .add("artwork_edition", StringType)
-      .add("estimate_price", StringType)
-      .add("realized_price", StringType)
-      .add("lot", StringType)
-      .add("auction_venue", StringType)
-      .add("auction_sale", StringType)
-      .add("sale_date", StringType)
-      .add("after", BooleanType)
-      .add("timestamp", StringType)
-      .add("artwork_link", StringType)
-
-    source match {
-      case "artsy" => kafkaArtsySchema
-      case "mutualart" => kafkaMutualartSchema
-      case _ => throw new IllegalArgumentException(s"Unknown source format: $source")
-    }
   }
 }
