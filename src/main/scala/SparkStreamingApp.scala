@@ -13,6 +13,11 @@ import java.util.Locale
 
 
 object SparkStreamingApp {
+  private def parseLotNumber(lot: String): String = {
+    val lotPattern = "\\d+".r
+    lotPattern.findAllIn(lot).mkString("")
+  }
+
   private def convertSaleDateToYMD(dateString: String): String = {
     val dates = dateString.split(" - ")
 
@@ -108,7 +113,7 @@ object SparkStreamingApp {
           stringOutMap("artwork_edition"),
           stringOutMap("estimate_price"),
           stringOutMap("realized_price"),
-          stringOutMap("lot"),
+          parseLotNumber(stringOutMap("lot")),
           stringOutMap("auction_venue"),
           convertSaleDateToYMD(stringOutMap("sale_date")),
           "null",
@@ -135,7 +140,7 @@ object SparkStreamingApp {
           "null",
           stringOutMap("estimate_price"),
           stringOutMap("realized_price"),
-          stringOutMap("lot_number"),
+          parseLotNumber(stringOutMap("lot_number")),
           stringOutMap("organization"),
           convertSaleDateToYMD(stringOutMap("sale_date")),
           "null",
