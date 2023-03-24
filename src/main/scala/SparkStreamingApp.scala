@@ -7,9 +7,56 @@ import org.json4s.DefaultFormats
 import org.json4s.jackson.JsonMethods._
 import com.github.mrpowers.spark.daria.sql.SparkSessionExt._
 import scala.util.matching.Regex
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 
 object SparkStreamingApp {
+  private def convertSaleDateToYMD(dateString: String): String = {
+    val dates = dateString.split(" - ")
+
+    val formatter1 = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+    val formatter2 = DateTimeFormatter.ofPattern("dd MMM yyyy", Locale.ENGLISH)
+    val formatter3 = DateTimeFormatter.ofPattern("MMM dd, yyyy", Locale.ENGLISH)
+    val formatter4 = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+
+    val parsedStartDate = try {
+      LocalDate.parse(dates(0).split(' ').map(_.capitalize).mkString(" "), formatter1)
+    } catch {
+      case _: Throwable =>
+        try {
+          LocalDate.parse(dates(0).split(' ').map(_.capitalize).mkString(" "), formatter2)
+        } catch {
+          case _: Throwable =>
+            LocalDate.parse(dates(0).split(' ').map(_.capitalize).mkString(" "), formatter3)
+        }
+    }
+    val startDate = parsedStartDate.format(formatter4)
+    var endDate = ""
+    if (dates.length >= 2) {
+      val parseEndDate = try {
+        LocalDate.parse(dates(1).split(' ').map(_.capitalize).mkString(" "), formatter1)
+      } catch {
+        case _: Throwable =>
+          try {
+            LocalDate.parse(dates(1).split(' ').map(_.capitalize).mkString(" "), formatter2)
+          } catch {
+            case _: Throwable =>
+              LocalDate.parse(dates(1).split(' ').map(_.capitalize).mkString(" "), formatter3)
+          }
+      }
+
+      endDate = parseEndDate.format(formatter4)
+    }
+
+    if (endDate != "") {
+      startDate + " - " + endDate
+    } else {
+      startDate
+    }
+  }
+
   private def convertArtworkDimension(artwork_dimension: String): String = {
     val dimension_cm_pattern: Regex = "(\\b([A-Za-z' \\.]* ?)?(?:.*?)(\\d*(?:[.,]\\d+)?)\\s*x\\s*(\\d*(?:[.,]\\d+)?)(?:(?:\\s*x\\s*)(\\d*(?:[.,]\\d+)?))?\\s*(cm|mm|m)\\b)+".r
 
@@ -44,11 +91,11 @@ object SparkStreamingApp {
     val mapObj = json.extract[Map[String, Any]]
     key match {
       case "mutualart" =>
-        val outMap = mapObj.-("auction_sale", "after", "timestamp", "artwork_link")
-        val stringOutMap = outMap.mapValues(v => {
+        val stringOutMap = mapObj.mapValues(v => {
           if (v != null) { v.toString.replaceAll("\n", "") }
           else { "null" }
         })
+        println(convertSaleDateToYMD(stringOutMap("sale_date")))
         (
           "mutualart",
           stringOutMap("artfacts_artist_id"),
@@ -63,19 +110,19 @@ object SparkStreamingApp {
           stringOutMap("realized_price"),
           stringOutMap("lot"),
           stringOutMap("auction_venue"),
-          stringOutMap("sale_date"),
+          convertSaleDateToYMD(stringOutMap("sale_date")),
           "null",
+          stringOutMap("auction_sale"),
           "null",
-          "null",
-          "null"
+          convertArtworkDimension(stringOutMap("artwork_size"))
         )
       case "artsy" =>
-        val outMap = mapObj.-("bought_in", "currency", "auction_id", "timestamp")
-        val stringOutMap = outMap.mapValues(v => {
+        val stringOutMap = mapObj.mapValues(v => {
           if (v != null) { v.toString.replaceAll("\n", "") }
           else { "null" }
         })
 
+        println(convertSaleDateToYMD(stringOutMap("sale_date")))
         (
           "artsy",
           stringOutMap("artfacts_artist_id"),
@@ -90,7 +137,7 @@ object SparkStreamingApp {
           stringOutMap("realized_price"),
           stringOutMap("lot_number"),
           stringOutMap("organization"),
-          stringOutMap("sale_date"),
+          convertSaleDateToYMD(stringOutMap("sale_date")),
           "null",
           stringOutMap("sale_title"),
           stringOutMap("location"),
