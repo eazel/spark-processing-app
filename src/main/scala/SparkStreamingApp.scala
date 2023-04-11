@@ -158,10 +158,10 @@ object SparkStreamingApp {
 
     val spark = SparkSession.builder()
       .appName("SparkStreamingApp")
-      .master("local")
+//      .master("local")
       .getOrCreate()
 
-    spark.sparkContext.setLogLevel("info")
+    spark.sparkContext.setLogLevel("debug")
     import spark.implicits._
 
     val kafkaServer = "ec2-3-36-52-200.ap-northeast-2.compute.amazonaws.com:9092"
