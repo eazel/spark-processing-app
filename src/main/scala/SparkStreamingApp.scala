@@ -1,18 +1,32 @@
 import org.apache.log4j.LogManager
-import org.apache.spark.sql.{DataFrame, Row, SQLContext, SaveMode, SparkSession}
-import org.apache.spark.sql.functions.{col, from_json, lit, monotonically_increasing_id, to_date}
-import org.apache.spark.sql.types.{BooleanType, DateType, IntegerType, StringType, StructField, StructType}
-import com.databricks.spark.redshift._
+import org.apache.spark.sql.functions.monotonically_increasing_id
+import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
+import org.apache.spark.sql.{Row, SQLContext, SaveMode, SparkSession}
 import org.json4s.DefaultFormats
 import org.json4s.jackson.JsonMethods._
-import com.github.mrpowers.spark.daria.sql.SparkSessionExt._
-import scala.util.matching.Regex
+
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import scala.util.matching.Regex
 
 
 object SparkStreamingApp {
+  private def convertToUSDPattern(priceString: String): String = {
+    val pricePattern = "\\d{1,3}(,\\d{3})*( - \\d{1,3}(,\\d{3})*)?".r
+    val prices = priceString.split("-").flatMap(pricePattern.findAllIn)
+    if (prices.isEmpty) {
+      priceString
+    } else {
+      val formattedPrices = prices.map(p => {
+        val digits = p.replaceAll(",", "")
+        val formattedDigits = digits.reverse.grouped(3).mkString(",").reverse
+        s"US$$$formattedDigits"
+      }).mkString(" - ")
+      s"$formattedPrices"
+    }
+  }
+
   private def parseLotNumber(lot: String): String = {
     val lotPattern = "\\d+".r
     lotPattern.findAllIn(lot).mkString("")
@@ -56,14 +70,14 @@ object SparkStreamingApp {
     }
 
     if (endDate != "") {
-      startDate + " - " + endDate
+      endDate
     } else {
       startDate
     }
   }
 
   private def convertArtworkDimension(artwork_dimension: String): String = {
-    val dimension_cm_pattern: Regex = "(\\b([A-Za-z' \\.]* ?)?(?:.*?)(\\d*(?:[.,]\\d+)?)\\s*x\\s*(\\d*(?:[.,]\\d+)?)(?:(?:\\s*x\\s*)(\\d*(?:[.,]\\d+)?))?\\s*(cm|mm|m)\\b)+".r
+    val dimension_cm_pattern: Regex = """(\b([A-Za-z' \.]* ?)?(?:.*?)(\d*(?:[.,]\d+)?)\s*[x×by]\s*(\d*(?:[.,]\d+)?)(?:(?:\s*[x×by]\s*)(\d*(?:[.,]\d+)?))?\s*(cm|mm|m)\b)+""".r
 
     val dimension: String = dimension_cm_pattern findFirstMatchIn artwork_dimension match {
       case Some(_) =>
@@ -79,7 +93,7 @@ object SparkStreamingApp {
             result = result + currentGroup
           }
         }
-        result.trim().replaceAll("null", "")
+        result.trim().replaceAll("null", "").replaceAll(",", ".")
       case None => "null"
     }
     dimension
@@ -88,8 +102,6 @@ object SparkStreamingApp {
   private def convertAuctionRecord(row: Row) = {
     val key = row.getAs[String]("key")
     val value = row.getAs[String]("value")
-    println("key: " + key)
-    println("value: " + value)
 
     val json = parse(value)
     implicit val formats: DefaultFormats = DefaultFormats
@@ -97,10 +109,11 @@ object SparkStreamingApp {
     key match {
       case "mutualart" =>
         val stringOutMap = mapObj.mapValues(v => {
-          if (v != null) { v.toString.replaceAll("\n", "") }
+          if (v != null && v.toString.nonEmpty) { v.toString.replaceAll("\n", "") }
           else { "null" }
         })
-        println(convertSaleDateToYMD(stringOutMap("sale_date")))
+//        println("artwork_dimension: " + stringOutMap("artwork_size") + ", " + convertArtworkDimension(stringOutMap("artwork_size")))
+
         (
           "mutualart",
           stringOutMap("artfacts_artist_id"),
@@ -111,8 +124,8 @@ object SparkStreamingApp {
           stringOutMap("artwork_medium"),
           stringOutMap("artwork_size"),
           stringOutMap("artwork_edition"),
-          stringOutMap("estimate_price"),
-          stringOutMap("realized_price"),
+          convertToUSDPattern(stringOutMap("estimate_price")),
+          convertToUSDPattern(stringOutMap("realized_price")),
           parseLotNumber(stringOutMap("lot")),
           stringOutMap("auction_venue"),
           convertSaleDateToYMD(stringOutMap("sale_date")),
@@ -123,11 +136,10 @@ object SparkStreamingApp {
         )
       case "artsy" =>
         val stringOutMap = mapObj.mapValues(v => {
-          if (v != null) { v.toString.replaceAll("\n", "") }
+          if (v != null && v.toString.nonEmpty) { v.toString.replaceAll("\n", "") }
           else { "null" }
         })
-
-        println(convertSaleDateToYMD(stringOutMap("sale_date")))
+//        println("artwork_dimension: " + stringOutMap("dimension") + ", " + convertArtworkDimension(stringOutMap("dimension")))
         (
           "artsy",
           stringOutMap("artfacts_artist_id"),
@@ -158,7 +170,6 @@ object SparkStreamingApp {
 
     val spark = SparkSession.builder()
       .appName("SparkStreamingApp")
-//      .master("local")
       .getOrCreate()
 
     spark.sparkContext.setLogLevel("debug")
@@ -166,6 +177,7 @@ object SparkStreamingApp {
 
     val kafkaServer = "kafka-01:9092"
     val topic = "test_topic2"
+    val redshift_jdbc_url = "jdbc:redshift://default.911700376290.ap-northeast-2.redshift-serverless.amazonaws.com:5439/dev?user=chaeeun&password=chaeeunRedshift"
 
     val redshiftSchema = StructType(
       Seq(
@@ -186,8 +198,7 @@ object SparkStreamingApp {
         StructField("category", StringType),
         StructField("auction_sale_title", StringType),
         StructField("location", StringType),
-        StructField("converted_dimension", StringType),
-        StructField("id", IntegerType)
+        StructField("converted_dimension", StringType)
       )
     )
 
@@ -211,7 +222,7 @@ object SparkStreamingApp {
       })
       .map(convertAuctionRecord)
 
-    var convertedDF = converted.toDF(
+    val convertedDF = converted.toDF(
       "record_source",
       "artfacts_artist_id",
       "source_artist_id",
@@ -232,52 +243,38 @@ object SparkStreamingApp {
       "converted_dimension"
     )
 
-    convertedDF = convertedDF.withColumn("id", monotonically_increasing_id())
-
     val unitedDF = redshiftDF.union(convertedDF)
-    unitedDF.show()
+    unitedDF.show(100)
 
-    // println("Transform the data to match the Redshift table schema")
+    println("Transform the data to match the Redshift table schema")
 
-    //    Class.forName("com.amazon.redshift.jdbc42.Driver")
-    //
-    //    val sqlContext = new SQLContext(spark.sparkContext)
-    //
-    //    // Write the transformed data to Redshift using the JDBC driver
-    //    val testDf = sqlContext.read
-    //      .format("io.github.spark_redshift_community.spark.redshift")
-    //      .option("url", redshift_jdbc_url)
-    //      .option("query", "select now()")
-    //      .option("tempdir", "s3n://eazel-emr-spark/query_temp/")
-    //      .option("forward_spark_s3_credentials", "true")
-    //      //      .option("user", "chaeeun")
-    //      //      .option("password", "chaeeunRedshift")
-    //      .load()
-    //
-    //    // Write the transformed data to Redshift using the JDBC driver
-    //    val writer = finalDF.write
-    //      .format("io.github.spark_redshift_community.spark.redshift")
-    //      .option("url", redshift_jdbc_url)
-    //      .option("dbtable", "merged_auction_record")
-    //      .option("tempdir", "s3n://eazel-emr-spark/query_temp/")
-    //      .option("forward_spark_s3_credentials", "true")
-    ////      .option("user", "chaeeun")
-    ////      .option("password", "chaeeunRedshift")
-    //      .mode(SaveMode.Append)
-    //      .save()
-    ////      .option("batchsize", "100")
-    ////      .option("isolationLevel", "NONE")
-    //
-    //    println("Write the transformed data to Redshift using the JDBC driver")
-    //
-    ////      val writer2 = finalDF.write
-    ////        .format("com.databricks.spark.redshift")
-    ////        .option("url", redshift_jdbc_url)
-    ////        .option("dbtable", "merged_auction_record")
-    //////        .option("tempdir", "s3://<s3-bucket>/path/to/temp/dir/")
-    ////        .mode("append")
-    ////        .save()
-    //////      writer.start().awaitTermination()
+    val sqlContext = new SQLContext(spark.sparkContext)
+
+//    val testDf = sqlContext.read
+//      .format("io.github.spark_redshift_community.spark.redshift")
+//      .option("url", redshift_jdbc_url)
+//      .option("query", "select now()")
+//      .option("tempdir", "s3n://eazel-emr-spark/query_temp/")
+//      .option("forward_spark_s3_credentials", "true")
+//      .load()
+
+//    // Write the unionDF to Redshift using the JDBC driver
+//    unitedDF.write
+//      .format("io.github.spark_redshift_community.spark.redshift")
+//      .option("url", redshift_jdbc_url)
+//      .option("dbtable", "merged_auction_record")
+//      .option("tempdir", "s3://eazel-emr-spark/query_temp/")
+//      .option("forward_spark_s3_credentials", "true")
+//      .mode(SaveMode.Append)
+//      .save()
+
+    //    val joinedDF: DataFrame = sqlContext.read
+//      .format("io.github.spark_redshift_community.spark.redshift")
+//      .option("url", redshift_jdbc_url)
+//      .option("query", "select * from ")
+//      .option("tempdir", "s3n://eazel-emr-spark/query_temp/")
+//      .load()
+
 
     spark.sparkContext.stop()
   }
