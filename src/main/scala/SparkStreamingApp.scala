@@ -1,7 +1,6 @@
 import org.apache.log4j.LogManager
-import org.apache.spark.sql.functions.monotonically_increasing_id
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
-import org.apache.spark.sql.{Row, SQLContext, SaveMode, SparkSession}
+import org.apache.spark.sql._
 import org.json4s.DefaultFormats
 import org.json4s.jackson.JsonMethods._
 
@@ -112,8 +111,6 @@ object SparkStreamingApp {
           if (v != null && v.toString.nonEmpty) { v.toString.replaceAll("\n", "") }
           else { "null" }
         })
-//        println("artwork_dimension: " + stringOutMap("artwork_size") + ", " + convertArtworkDimension(stringOutMap("artwork_size")))
-
         (
           "mutualart",
           stringOutMap("artfacts_artist_id"),
@@ -139,7 +136,6 @@ object SparkStreamingApp {
           if (v != null && v.toString.nonEmpty) { v.toString.replaceAll("\n", "") }
           else { "null" }
         })
-//        println("artwork_dimension: " + stringOutMap("dimension") + ", " + convertArtworkDimension(stringOutMap("dimension")))
         (
           "artsy",
           stringOutMap("artfacts_artist_id"),
@@ -172,12 +168,12 @@ object SparkStreamingApp {
       .appName("SparkStreamingApp")
       .getOrCreate()
 
-    spark.sparkContext.setLogLevel("debug")
+    spark.sparkContext.setLogLevel("info")
     import spark.implicits._
 
     val kafkaServer = "kafka-01:9092"
     val topic = "test_topic2"
-    val redshift_jdbc_url = "jdbc:redshift://default.911700376290.ap-northeast-2.redshift-serverless.amazonaws.com:5439/dev?user=chaeeun&password=chaeeunRedshift"
+    val redshift_jdbc_url = "insert.."
 
     val redshiftSchema = StructType(
       Seq(
@@ -246,35 +242,150 @@ object SparkStreamingApp {
     val unitedDF = redshiftDF.union(convertedDF)
     unitedDF.show(100)
 
-    println("Transform the data to match the Redshift table schema")
-
     val sqlContext = new SQLContext(spark.sparkContext)
 
-//    val testDf = sqlContext.read
-//      .format("io.github.spark_redshift_community.spark.redshift")
-//      .option("url", redshift_jdbc_url)
-//      .option("query", "select now()")
-//      .option("tempdir", "s3n://eazel-emr-spark/query_temp/")
-//      .option("forward_spark_s3_credentials", "true")
-//      .load()
+    println("insert all new records from kafka to incoming_auction_record table...")
 
-//    // Write the unionDF to Redshift using the JDBC driver
-//    unitedDF.write
-//      .format("io.github.spark_redshift_community.spark.redshift")
-//      .option("url", redshift_jdbc_url)
-//      .option("dbtable", "merged_auction_record")
-//      .option("tempdir", "s3://eazel-emr-spark/query_temp/")
-//      .option("forward_spark_s3_credentials", "true")
-//      .mode(SaveMode.Append)
-//      .save()
+    val deleteIncomingTable = "delete from incoming_auction_record"
+    unitedDF.write
+      .format("io.github.spark_redshift_community.spark.redshift")
+      .option("url", redshift_jdbc_url)
+      .option("dbtable", "incoming_auction_record")
+      .option("tempdir", "s3n://eazel-emr-spark/query_temp/")
+      .option("forward_spark_s3_credentials", "true")
+      .option("preactions", deleteIncomingTable)
+      .mode(SaveMode.Append)
+      .save()
 
-    //    val joinedDF: DataFrame = sqlContext.read
-//      .format("io.github.spark_redshift_community.spark.redshift")
-//      .option("url", redshift_jdbc_url)
-//      .option("query", "select * from ")
-//      .option("tempdir", "s3n://eazel-emr-spark/query_temp/")
-//      .load()
+    println("join two query and read...")
+    val joinQuery =
+      """select mar.artfacts_artist_id,
+        |    case
+        |        when mar.record_source = 'artsy' then nvl(mar.artfacts_artist_name, iar.artfacts_artist_name)
+        |        else iar.artfacts_artist_name
+        |    end as artfacts_artist_name,
+        |    case
+        |        when mar.record_source = 'artsy' then mar.record_source
+        |        else iar.record_source
+        |    end as record_source,
+        |    case
+        |        when mar.record_source = 'artsy' then mar.source_artist_id
+        |        else iar.source_artist_id
+        |    end as source_artist_id,
+        |    case
+        |        when mar.record_source = 'artsy' then nvl(mar.title, iar.title)
+        |        else iar.title
+        |    end as title,
+        |    mar.lot,
+        |    case
+        |        when mar.record_source = 'artsy' then nvl(mar.artwork_created_date, iar.artwork_created_date)
+        |        else iar.artwork_created_date
+        |    end as artwork_created_date,
+        |    case
+        |        when mar.record_source = 'artsy' then nvl(mar.medium, iar.medium)
+        |        else iar.medium
+        |    end as medium,
+        |    case
+        |        when mar.record_source = 'artsy' then nvl(mar.dimension, iar.dimension)
+        |        else iar.dimension
+        |    end as dimension,
+        |    nvl(mar.edition, iar.edition) as edition,
+        |    case
+        |        when mar.record_source = 'artsy' then nvl(mar.estimate_price, iar.estimate_price)
+        |        else iar.estimate_price
+        |    end as estimate_price,
+        |    case
+        |        when mar.record_source = 'artsy' then nvl(mar.realized_price, iar.realized_price)
+        |        else iar.realized_price
+        |    end as realized_price,
+        |    mar.sale_date,
+        |    case
+        |        when mar.record_source = 'artsy' then nvl(mar.auction_sale_organization, iar.auction_sale_organization)
+        |        else iar.auction_sale_organization
+        |    end as auction_sale_organization,
+        |    mar.category,
+        |    case
+        |        when mar.record_source = 'artsy' then nvl(mar.auction_sale_title, iar.auction_sale_title)
+        |        else iar.auction_sale_title
+        |    end as auction_sale_title,
+        |    case
+        |        when mar.record_source = 'artsy' then nvl(mar.location, iar.location)
+        |        else iar.location
+        |    end as location,
+        |    case
+        |        when mar.record_source = 'artsy' then nvl(mar.converted_dimension, iar.converted_dimension)
+        |        else iar.converted_dimension
+        |    end as converted_dimension
+        |from merged_auction_record as mar
+        |join incoming_auction_record as iar
+        |on mar.artfacts_artist_id = iar.artfacts_artist_id
+        |and mar.lot = iar.lot
+        |and mar.sale_date = iar.sale_date
+        |and contains_all(mar.auction_sale_organization, iar.auction_sale_organization)
+        |and contains_all(mar.auction_sale_title, iar.auction_sale_title)""".stripMargin
 
+    val joinedTable: DataFrame = sqlContext.read
+      .format("io.github.spark_redshift_community.spark.redshift")
+      .option("url", redshift_jdbc_url)
+      .option("query", joinQuery)
+      .option("tempdir", "s3n://eazel-emr-spark/query_temp/")
+      .option("forward_spark_s3_credentials", "true")
+      .load()
+
+    joinedTable.show()
+
+    println("delete all duplicated records from the merged table...")
+
+    val deleteQuery =
+      """delete from merged_auction_record
+        |using incoming_auction_record
+        |where merged_auction_record.artfacts_artist_id = incoming_auction_record.artfacts_artist_id
+        |and merged_auction_record.lot = incoming_auction_record.lot
+        |and merged_auction_record.sale_date = incoming_auction_record.sale_date
+        |and contains_all(merged_auction_record.auction_sale_organization, incoming_auction_record.auction_sale_organization)
+        |and contains_all(merged_auction_record.auction_sale_title, incoming_auction_record.auction_sale_title)""".stripMargin
+
+    println("select duplicated record and insert the selected records into the merged table...")
+    joinedTable.write
+      .format("io.github.spark_redshift_community.spark.redshift")
+      .option("url", redshift_jdbc_url)
+      .option("dbtable", "merged_auction_record")
+      .option("tempdir", "s3n://eazel-emr-spark/query_temp/")
+      .option("forward_spark_s3_credentials", "true")
+      .option("preactions", deleteQuery)
+      .mode(SaveMode.Append)
+      .save()
+
+    println("insert un-duplicated records from incoming record into the merged table")
+    val incoming_records =
+      """SELECT *
+        |FROM incoming_auction_record AS iar
+        |WHERE NOT EXISTS (
+        |    SELECT 1
+        |    FROM merged_auction_record AS mar
+        |    WHERE mar.artfacts_artist_id = iar.artfacts_artist_id
+        |    AND mar.lot = iar.lot
+        |    AND mar.sale_date = iar.sale_date
+        |    AND contains_all(mar.auction_sale_organization, iar.auction_sale_organization)
+        |    AND contains_all(mar.auction_sale_title, iar.auction_sale_title)
+        |)""".stripMargin
+
+    val incomingTable: DataFrame = sqlContext.read
+      .format("io.github.spark_redshift_community.spark.redshift")
+      .option("url", redshift_jdbc_url)
+      .option("query", incoming_records)
+      .option("tempdir", "s3n://eazel-emr-spark/query_temp/")
+      .option("forward_spark_s3_credentials", "true")
+      .load()
+
+    incomingTable.write
+      .format("io.github.spark_redshift_community.spark.redshift")
+      .option("url", redshift_jdbc_url)
+      .option("dbtable", "merged_auction_record")
+      .option("tempdir", "s3n://eazel-emr-spark/query_temp/")
+      .option("forward_spark_s3_credentials", "true")
+      .mode(SaveMode.Append)
+      .save()
 
     spark.sparkContext.stop()
   }
