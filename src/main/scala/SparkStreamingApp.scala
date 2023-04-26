@@ -8,6 +8,7 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import scala.util.matching.Regex
+import java.text.BreakIterator
 
 
 object SparkStreamingApp {
@@ -32,6 +33,9 @@ object SparkStreamingApp {
   }
 
   private def convertSaleDateToYMD(dateString: String): String = {
+    if (dateString == "null") {
+      return "null"
+    }
     val dates = dateString.split(" - ")
 
     val formatter1 = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
@@ -105,14 +109,14 @@ object SparkStreamingApp {
     val json = parse(value)
     implicit val formats: DefaultFormats = DefaultFormats
     val mapObj = json.extract[Map[String, Any]]
-    key match {
+    val stringOutMap = mapObj.mapValues(v => {
+      if (v != null && v.toString.nonEmpty) v.toString.replaceAll("\n", "")
+      else "null"
+    })
+    stringOutMap("record_source") match {
       case "mutualart" =>
-        val stringOutMap = mapObj.mapValues(v => {
-          if (v != null && v.toString.nonEmpty) { v.toString.replaceAll("\n", "") }
-          else { "null" }
-        })
         (
-          "mutualart",
+          stringOutMap("record_source"),
           stringOutMap("artfacts_artist_id"),
           stringOutMap("mutualart_artist_id"),
           stringOutMap("artist_name"),
@@ -132,12 +136,8 @@ object SparkStreamingApp {
           convertArtworkDimension(stringOutMap("artwork_size"))
         )
       case "artsy" =>
-        val stringOutMap = mapObj.mapValues(v => {
-          if (v != null && v.toString.nonEmpty) { v.toString.replaceAll("\n", "") }
-          else { "null" }
-        })
         (
-          "artsy",
+          stringOutMap("record_source"),
           stringOutMap("artfacts_artist_id"),
           stringOutMap("artsy_artist_id"),
           stringOutMap("artfacts_artist_name"),
@@ -173,7 +173,7 @@ object SparkStreamingApp {
 
     val kafkaServer = "kafka-01:9092"
     val topic = "test_topic2"
-    val redshift_jdbc_url = "insert.."
+    val redshift_jdbc_url = "insert here.."
 
     val redshiftSchema = StructType(
       Seq(
