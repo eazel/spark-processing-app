@@ -1,20 +1,32 @@
-ThisBuild / version := "0.1.0-SNAPSHOT"
+ThisBuild / version := "0.1.0"
 
 ThisBuild / scalaVersion := "2.12.15"
+ThisBuild / organization := "net.eazel"
 
-lazy val root = (project in file("."))
+lazy val auctionHistory = (project in file("auction-history"))
   .settings(
-    name := "data-spark-streaming"
+    name := "auction-history-data-spark-streaming",
+    assembly / assemblyJarName := s"${name.value}.jar",
+    libraryDependencies ++= commonDependencies ++ auctionHistoryDependencies
   )
 
-libraryDependencies ++= Seq(
-  "org.apache.spark" %% "spark-sql" % "3.2.0",
-//  "org.apache.spark" %% "spark-sql" % "3.0.1",
+lazy val artfactsSpotlight = (project in file("artfacts"))
+  .settings(
+    name := "artfacts-spotlight-data-spark-streaming",
+    assembly / assemblyJarName := s"${name.value}.jar",
+    libraryDependencies ++= commonDependencies ++ artfactsSpotlightDependencies
+  )
+
+lazy val commonDependencies = Seq(
+  "org.apache.spark" %% "spark-sql" % "3.2.0" % "provided",
   "org.apache.spark" %% "spark-streaming-kafka-0-10" % "3.2.0",
-  "com.amazonaws" % "aws-java-sdk-redshift" % "1.12.102",
-  "org.apache.spark" % "spark-sql-kafka-0-10_2.12" % "3.2.0",
-  "com.databricks" % "spark-redshift_2.11" % "2.0.1",
-  "com.amazon.redshift" % "redshift-jdbc42" % "2.0.0.7",
+  "com.databricks" % "spark-redshift_2.11" % "2.0.1" % "provided",
+  "com.amazonaws" % "aws-java-sdk-redshift" % "1.12.102" % "provided",
+  "org.apache.spark" % "spark-sql-kafka-0-10_2.12" % "3.2.0" % "provided",
+  "com.amazon.redshift" % "redshift-jdbc42" % "2.0.0.7" % "provided",
+)
+
+lazy val auctionHistoryDependencies = Seq(
   "com.github.mrpowers" %% "spark-daria" % "1.2.3",
   "edu.stanford.nlp" % "stanford-corenlp" % "4.3.1",
   "edu.stanford.nlp" % "stanford-corenlp" % "4.3.1" classifier "models",
@@ -22,18 +34,25 @@ libraryDependencies ++= Seq(
   "net.java.dev.jets3t" % "jets3t" % "0.9.4"
 )
 
-assemblyMergeStrategy in assembly := {
+lazy val artfactsSpotlightDependencies = Seq(
+  "com.desmondyeung.hashing" %% "scala-hashing" % "0.1.0"
+)
+
+ThisBuild / assemblyMergeStrategy := {
   case PathList("META-INF", xs @ _*) => MergeStrategy.discard
   case x => MergeStrategy.first
 }
 
-assemblyOption in assembly := (assemblyOption in assembly).value.copy(includeScala = false)
+// ThisBuild / assemblyJarName := "data-spark-streaming.jar"
+// ThisBuild / assemblyOption := (ThisBuild / assemblyOption).value.copy(includeScala = false)
 
-mainClass in assembly := Some("com.example.KafkaToRedshift")
+// assemblyOption in assembly := (assemblyOption in assembly).value.copy(includeScala = false)
 
-assemblyJarName in assembly := "kafka-to-redshift.jar"
+// mainClass in assembly := Some("com.example.KafkaToRedshift")
 
-javaOptions in run ++= Seq(
+// assemblyJarName in assembly := "kafka-to-redshift.jar"
+
+run / javaOptions ++= Seq(
   "-Dlog4j.configuration=file:./log4j.properties",
   "-Dcom.amazonaws.sdk.disableCertChecking"
 )
