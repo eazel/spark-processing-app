@@ -1,4 +1,5 @@
 project/*
+!project/plugins.sbt
 target/*
 .DS_Store
 .env
